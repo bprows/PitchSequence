@@ -1,0 +1,393 @@
+---
+title: "Final Report"
+author: "Broderick Prows"
+date: "12/18/2020"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(warning = F)
+knitr::opts_chunk$set(message = F)
+```
+
+
+```{r Code Necessary for the Report}
+library(dplyr)
+source(file = "NB_Source.R")
+archer <- read.csv("ArcherData.csv")
+scherzer <- read.csv("ScherzerData.csv")
+#archer1 <- read.csv("archer3_mcmc.csv")
+archer2 <- read.csv("Archer4mcmc.csv")
+names(archer2)[9:16] <- c("intercept", "Left", "ahead", "scoring", "outs",
+                       "previous_des", "pitch_number", "prev_pitch_type")
+
+archer_predsLR <- read.csv("Archer_PredsLR.csv")
+arch_predsNB <- read.csv("ArchPredsNB.csv")
+max_mcmc <- read.csv("Max5mcmc.csv")
+max_preds <- read.csv("Scherzer_Preds.csv")
+maxpredsNB <- read.csv("MaxPredsNB.csv")
+```
+
+```{r}
+chris_summary <- archer %>% 
+  group_by(pitch_type) %>%
+  summarise(Speed = mean(release_speed),
+            n = n()) %>%
+  mutate(Frequency = n / sum(n)) %>% select(pitch_type, Speed, Frequency) %>% rename(PitchType = pitch_type) %>% arrange(desc(Frequency))
+
+max_summary <- scherzer %>% 
+  group_by(pitch_type) %>%
+  summarise(Speed = mean(release_speed),
+            n = n()) %>%
+  mutate(Frequency = n / sum(n)) %>% select(pitch_type, Speed, Frequency) %>% rename(PitchType = pitch_type) %>% arrange(desc(Frequency))
+
+
+```
+
+
+\center
+# Abstract
+\raggedright
+|   This analysis attempts to apply Bayesian methods to data from MLB games to predict pitch types. The data used was related to the situation of the game at each pitch for two pitchers, Chris Archer and Max Scherzer. Some effort was spent on data cleaning and feature engineering. The main topic of this report is a comparison of performance and usability of Logistic/Multinomial regression in a Bayesian framework and a Naive Bayes Classifier with categorical input features. The Regression models were implemented in JAGS, while the Naive Bayes Classifier was coded from scratch in R. 
+
+
+*Keywords: Bayesian Logistic Regression, Bayesian Multinomial Regression, Naive Bayes, Classifier, Baseball, Prediction, JAGS*
+
+\pagebreak
+# 1   Introduction
+|   Baseball is a popular game in North America. A Pitcher throws a ball towards the batter, who tries to hit the ball. The Pitcher can throw various different pitch types, such as a fastball, which is mostly straight and anywhere from 90-100 mph, or a curveball, which can be 75-85 mph and drop 12-18 inches. This makes the job of the hitter more difficult, as most will try to guess what they think the pitcher will throw next, because there is not very much time to recognize the pitch type and change the swing timing. The 2017 Houston Astro's infamously cheated during the season by setting up a camera to see the catcher's signs to the pitcher and deciphering them. They would bang on a trash can to signal to the hitter what pitch type was coming next. This gave them a huge advantage over their opponents, and they even won the world series that year. While this methodology is cheating, there are many teams that have analytics departments that attempt to answer the question of what pitch type is coming next. This paper will describe a Bayesian approach to understand trends in pitch sequences. 
+
+
+
+# 2   Motivating Data
+|   The data comes from the [*baseballr*](http://billpetti.github.io/baseballr/) package in R. The developers of this package implemented a webscraper that pulls data from [Baseball Savant](https://baseballsavant.mlb.com/). The data provides pitch-by-pitch details about the game situation such as number of outs, runners on base, balls, strikes, who is hitting, catching, etc. The most recent data available is from 2016. Two pitchers were used for this analysis, Chris Archer and Max Scherzer.  
+
+|   **Chris Archer** pitched for the Tampa Bay Rays in 2016. He primarily throws 2 different pitch types. 
+```{r}
+knitr::kable(chris_summary, digits=3)
+```
+
+
+|   **Max Scherzer** pitched for the Washington Nationals and was the National League Cy Young Award winner for that season, meaning he was the most dominant pitcher in the league. He throws 5 different pitch types, but there is some significant class imbalance (some pitches thrown less than 1% of the time). Due to this imbalance, similar pitches will be grouped together to create more balance/less classes. This will help simplify the problem and allow faster sampling.
+```{r}
+knitr::kable(max_summary, digits=3)
+```
+
+|   Even combining pitches that are most similar leads to some class imbalance, but it is better than before.
+```{r}
+scherzer$pitch_type <- ifelse(scherzer$pitch_type %in% c("FF", "FC", "FT"), "FF", 
+                               ifelse(scherzer$pitch_type %in% c("SL", "CH"), "SL-CH", "CU"))
+max_summary <- scherzer %>% 
+  group_by(pitch_type) %>%
+  summarise(Speed = mean(release_speed),
+            n = n()) %>%
+  mutate(Frequency = n / sum(n)) %>% select(pitch_type, Speed, Frequency) %>% rename(PitchType = pitch_type) %>% arrange(desc(Frequency))
+knitr::kable(max_summary, digits=3)
+```
+
+# 3   Models
+|   A Multinomial Regression model would be a natural choice to use in this setting. For a pitcher with $K$ different pitch types, the following model is applied. The goal is to be able to make inference about $\beta_k$ and predict $Y_i$. Let $Y_i$ denote the pitch type and $X_i$ be the input data with $D$ predictors, all of which are centered at 0. 
+$$ Y_i \sim Categorical(p_{ik}) $$
+$$ p_{ik} = \frac{e^{q_{ik}}}{\sum_{j=1}^{J} e^{q_{ij}}} $$
+$$ q_{ik} = X_i\beta_k $$
+$$\beta_{kd} \sim N(\mu_{kd}, \sigma^2_{kd}) $$
+where d is the dimension of features in $X_i$ and $\beta_1 = 0$. Every other $\beta_{kd}$ prior is set to $N(0,10)$. When $K=2$ (Chris Archer) this simplifies to Logistic Regression.
+
+
+|   Additionally, a Naive Bayes Classifier could be used to predict the class of the pitch type given the game information. It is called Naive because it assumes that each predictor is independent, which allows the problem to be necessarily simplified.  Let each $X_{ij}$ be a categorical/bernoulli predictor. $Y_i$ denotes pitch type $i$, $K=$ Number of Pitch Types, $J=$ features of X, and $c_j$ denote the number of categories in feature $j$.
+$$ Y_i \sim Catgorical(\pi_k) $$
+
+$$ \pi_k \sim Dirichlet(\alpha_k) $$
+
+$$ X_{ij} \sim Categorical(\theta_{kjc}) $$
+
+$$ \theta_{kjc} \sim Dirchlet(\beta_{kjc}) $$
+
+$$ \sum_{k=1}^K \pi_k = 1, \quad \sum_{c=1}^{C_j} \theta_{kjc} $$
+
+|   This model follows the following steps. 
+1. Set priors by initializing values for $\alpha$ and $\theta$. This model assumes a weakly informative prior with $\alpha=1$ and $\beta_j=1$
+2. Calculate Summary Statistics. $N_k =$ count of $Y_i = k$. $N_{kjc} =$ count of $Y_i = k$ and $X_{ij} = c$.
+3. Update priors. $\alpha_k^* = \alpha_k + N_k$ and $\beta_{kjc}^* = \beta_{kjc} + N_{kjc}$
+4. When presented with new data $X_{next}$ (next pitch), use the model to predict $Y_{next}$ by calculating $P(Y_{next} = k | X_{next}) = \pi_k * \prod_{j=1}^J \prod_{c=1}^{C_j} \theta_{kjc}^{(X_{next,kj}=c)}$ for each pitch type $k$. Note that it will be easier to work with $log(P(Y_{next} = k | X_{next}))$. 
+
+
+# 4   Real Data Analysis
+## Chris Archer
+##### Logistic Regression  \
+
+|   Since Chris Archer only throws 2 pitch types, the Multinomial Regression reduces to a Logistic Regression. The first model uses simple predictors: left-handed batter, ahead in the count, runners in scoring position, and how many outs are in the inning. The model was fit in JAGS, and the mcmc diagnostics look good, each series appeared to converge. The DIC was 3496 and accuracy was 57%. The next model includes a few more predictors: pitch number of at bat, previous pitch type, and what happened on the previous pitch (swing, take, etc). The DIC 3369 was and accuracy was 62%, making the second model favorable to the first model. Below are the estimates for the coefficients and the confusion matrix for predictions on the test set. 
+
+```{r}
+mod4_table <- NULL
+mod4_table$Feature <- names(archer2)[9:16]
+mod4_table$CILB <- apply(archer2[,9:16], 2, function(x) quantile(x, 0.025))
+mod4_table$CIUB <- apply(archer2[,9:16], 2, function(x) quantile(x, 0.975))
+mod4_table$Significance <- ifelse(mod4_table$CILB * mod4_table$CIUB > 0,"   *","") 
+
+knitr::kable(as.data.frame(mod4_table, row.names=mod4_table$Feature)[,-1], digits=3, col.names=c("Lower Bound 95% CI", "Upper Bound 95% CI", ""))
+```
+
+|   When Archer is ahead in the count he is more likely to throw an OS pitch, similarly when there are more outs in the inning, however when there are runners in scoring position the odds of seeing an OS pitch are decreased. Additionally, Pitch Number was significant, indicating that as the at-bat continues the odds of seeing an OS pitch next are increasing. 
+
+```{r}
+knitr::kable(table(archer_predsLR$Predicted, archer_predsLR$Actual))
+```
+
+|   The Confusion Matrix appears to be fairly balanced, not overestimating either pitch type, that being said, the accuracy is not much better than flipping a coin. 
+
+##### Naive Bayes Classifier  \
+
+|   Here are the results from the Naive Bayes Classifier. All of the same features as above were used, but the pitch number had to be changed to accommodate long at-bats. Since this model relies on having a lot of data, it does not make sense to include pitch number = 10 since it is so rare. Any pitch number greater than 5 was assigned pitch number = 6. The accuracy for this model was only 58%, less than the Logistic Regression.
+```{r}
+knitr::kable(table(arch_predsNB$pred_class, arch_predsNB$actual))
+```
+
+
+## Max Scherzer
+##### Multinomial Regression  \
+
+|   The same model as above was fit on the data for Max Scherzer. Since he throws k=3 pitches, this does not simplify down to the logistic regression, thus making the interpretation a little more challenging, since each estimate for $\beta_{kj}$ only estimates the increase in the log odds of pitch type $=k$ for feature $j$ relative to the base class of pitch type $k=1$. The Accuracy for this model was 62%. 
+
+```{r}
+conf_mat_max <- rbind(c(0,0,0),table(max_preds$pred_type, max_preds$pitch_type))
+row.names(conf_mat_max)[1] <- colnames(conf_mat_max)[1]
+knitr::kable(conf_mat_max)
+```
+
+|   The confusion matrix indicates the CU was never predicted by this model. This is not too alarming, as CU only appears 8% of the time in the original data. Since CU is not ever predicted, it might make sense to group it in with the SL-CH category, since it is more similar to those pitches, and then might be more detectable. But that is subjective, since this model does not have strong prediction power, it might make sense to use another model anyways or create better data to train this type of model on. 
+
+##### Naive Bayes Classifier  \
+
+|   The Accuracy for the Naive Bayes Classifier for Max Scherzer was 54%. This classifier was able to identify some of the CU pitches better than the Multinomial Regression, but the accuracy was worse overall. Inference is possible in this setting, by either examining the posterior distribution of the $\theta_{kjc}$ or creating a dummy dataset and changing the values of each of the features and seeing how to posterior distribution of $\pi_k$ changes since each feature is treated as independent. Again, this model is not very accurate, there needs to be some better data to train it on. 
+
+```{r}
+knitr::kable(table(maxpredsNB$pred_type, maxpredsNB$pitch_type))
+```
+
+
+# 5   Discussion
+
+|   Both types of models were trained on the same data for each pitcher, but the Multinomial/Logistic Regression outperformed the NB classifier for both pitchers. This type of model also provided easier inference (in the logistic regression case especially) relative to the NB model. The NB model is basically just a fancy way of counting was has happened in the past and making predictions based on those counts. This relies on having a lot of data in the many different game situations that are possible. The NB models were trained using only 7 categorical features related the the game situations, and some of those features had to be simplified so that there were not too many categories within each feature. This limits the flexibility in the model given the training data available. For this problem and data, the Multinomial Regression models were the clear winners, but model performance was underwhelming.
+
+|   This is an inherently challenging problem. Baseball players are paid millions of dollars every year to engage in this game of chess. Pitchers and catchers are constantly trying to outsmart hitters and keep them off-balance. Hitters are constantly trying to find patterns and get inside the mind of the pitcher. An interesting way to evaluate these models would be comparing model predictions to player predictions. Even though the models' accuracy was only around 60%, this could be higher or lower than what hitters have been predicting in the batter's box. There might also be value in using the posterior probabilities of each pitch type to change the classification to pitch type $k$ or unsure. For example, only predict FF for Chris Archer if the posterior probability of FF is over 0.80, or vice versa, rather than 0.50 threshold currently used. That allows players to be confident in the actual predictions, even if strong predictions come less often. There could also be some work in playing with priors for each of the models, possibly resetting the priors to some scaled value of their current informative level to capture day to day changes if a pitcher is behaving different from normal on a particular day.
+
+|   Finally, the best way to improve these models would be to develop some better data. This data oversimplified the game, usually catchers make pitch calls depending on things they see in the batter, how off-balance they are, how well they are seeing certain pitches, and what kind of pitches they like to see. Being able to capture features like this would give more insight to how the catcher/pitcher think and help the models train on more relevant data. However, creating features like this would be extremely challenging and would require some method to automate the data collection (another very challenging problem). These simple models suffice the purpose of this research to become familiar with bayesian methods, but are not accurate enough to give much of an advantage in a real world situation. 
+
+\newpage
+# Appendix
+```{r, include=T,eval=F,echo=T}
+#### Naive Bayes Classifier ####
+
+library(tidyr)
+UpdateNB <- function(df, target = NULL, alphas, beta1, beta2) {
+  if (!is.null(target)) {
+    df <- cbind(target,df)
+  }
+  
+  names(df)[1] <- "target"
+  
+  # Extract summary statistics
+  Nc <- df %>%
+    group_by(target) %>%
+    summarise(Nc = n())
+  targets <- Nc$target
+  num_targets <- length(unique(targets))
+  alphas <- alphas + Nc$Nc
+  Nc <- matrix(data = Nc$Nc, nrow=num_targets, ncol=ncol(df)-1, byrow=F)
+  
+  Njc <- df %>%
+    group_by(target) %>%
+    summarise_all(sum)
+  
+  beta1s <- beta1 + Njc[,-1]
+  beta2s <- beta2 + Nc - Njc[,-1]
+  
+  post_mean_pi <- alphas / sum(alphas)
+  
+  post_mean_thetas <- beta1s / (Nc + beta1 + beta2)
+  
+  # Change names
+  row.names(post_mean_pi) <- targets
+  row.names(post_mean_thetas) <- targets
+  row.names(beta1s) <- targets
+  row.names(beta2s) <- targets
+  row.names(alphas) <- targets
+  
+  out <- list(post_pi = post_mean_pi, 
+              post_theta = post_mean_thetas,
+              beta1 = beta1s,
+              beta2 = beta2s,
+              alphas = alphas)
+  return(out)
+}
+
+predictNB <- function(X, post_thetas, post_pi) {
+  X_comp <- abs(X-1)
+  post_ys <- matrix(data=NA, nrow=nrow(X), ncol=nrow(post_pi))
+  for (i in 1:nrow(X)) { # Make prediction for each row of X
+    post_y <- NULL
+    for (p in 1:nrow(post_pi)) { # Calculate Posterior probs of each category.
+      post_y[p] <- prod(post_thetas[p,] ** X[i,]) * prod((1-post_thetas[p,])**X_comp[i,]) * post_pi[p]
+    }
+    post_ys[i,] <- post_y/sum(post_y) # Append Predicted values to post_ys
+  }
+  colnames(post_ys) <- row.names(post_thetas)
+  return(post_ys)
+}
+
+
+post_theta_calc <- function(mat) { #input is beta[[j]]
+  mat <- as.matrix(mat)
+  out <- matrix(data = NA, nrow=nrow(mat),ncol=ncol(mat)) # same dimensions
+  for (i in 1:nrow(mat)) {
+    out[i, ] <- mat[i,] / sum(mat[i,]) # this is being converted to a list!!!!!!! 
+  }
+  row.names(out) <- row.names(mat)
+  colnames(out) <- colnames(mat)
+  return(out)
+}
+
+
+UpdateMNNB <- function(feats, target = NULL, alphas = NULL, betas = NULL) {
+  
+  if(!is.null(target)) { # adjust if features passed in seperate from data
+    feats <- cbind(target,feats)
+  }
+  
+  names(feats)[1] <- "target"  # renames column 1 = target
+  num_targ <- length(unique(feats$target))
+  d <- ncol(feats) - 1
+  
+  if(is.null(alphas)) { # initialize alphas if not passed in
+    alphas <- matrix(data= 1, nrow=num_targ)
+  }
+  
+  if(is.null(betas)) { # initialize betas if none passed in
+    betas <- list()
+    kjs <- NULL
+    for (j in 1:d) {
+      kjs[j] <- length(unique(feats[,j+1]))
+      betas[[j]] <- matrix(data=1, nrow=num_targ, ncol=kjs[j])
+    }
+  }
+  
+  # compute summary statistics
+  Nc <- feats %>%
+    group_by(target) %>%
+    summarise(Nc = n())
+  targets <- Nc$target
+  alphas <- alphas + Nc$Nc
+  
+  # update betas
+  for (j in 1:d) {
+    Ncjk <- 
+      feats %>% select(1,feat = j+1) %>%
+      group_by(target, feat) %>%
+      summarise(Ncjk = n()) %>%
+      pivot_wider(names_from = feat, values_from = Ncjk)
+    
+    betas[[j]] <- Ncjk[-1] + betas[[j]]
+    row.names(betas[[j]]) <- targets
+    colnames(betas[[j]]) <- colnames(Ncjk)[-1]
+    names(betas)[j] <- names(feats)[j+1]
+  }
+  
+  post_pi <- alphas / sum(alphas)
+  post_thetas <- lapply(betas, FUN = post_theta_calc)
+  
+  # Change names
+  row.names(post_pi) <- targets
+  row.names(alphas) <- targets
+  
+  out <- list(post_pi = post_pi, 
+              post_theta = post_thetas,
+              betas = betas,
+              alphas = alphas)
+  return(out)
+}
+
+predictMNNB <- function(Xnew, post_pi, post_theta) {
+  post_ps <- matrix(nrow=nrow(Xnew), ncol=nrow(post_pi))
+  Pc <- NULL
+  for (i in 1:nrow(Xnew)) {
+    X <- as.vector(Xnew[i,])
+    for (c in 1:nrow(post_pi)) {
+      Lc <- log(post_pi[c]) 
+      for (j in 1:length(X)) {
+        Lc <- Lc + log(post_theta[[j]][c, colnames(post_theta[[j]]) == as.character(X[j])])
+      }
+      Pc[c] <- exp(Lc)
+    }
+    post_ps[i,] <- Pc / sum(Pc)
+  }
+  return(post_ps)
+}
+
+#### JAGS Models ####
+model_string1 <- "model
+{
+for(i in 1:N){
+    pitch_type[i] ~ dcat(p[i, 1:J])
+    
+    for (j in 1:J){
+      log(q[i,j]) <-  b[1,j] + 
+        b[2,j] * left[i] + 
+        b[3,j] * ahead[i] + 
+        b[4,j] * scoring_pos[i]  + 
+        b[5,j] * outs_when_up[i]
+      p[i,j] <- q[i,j]/(sum(q[i,1:J]))  ## should be familiar from MLE notes: q is exp(Xb)
+    }   # close J loop
+  }  # close N loop
+  
+  for(k in 1:5){
+    b[k,1] <- 0          ## Constrain to 0 for base comparison
+    for(j in 2:J){
+      b[k,j] ~ dnorm(0, 0.1)
+    }  # close J loop
+  }  # close K loop
+}
+"
+
+model_string2 <- "model
+{
+for(i in 1:N){
+    pitch_type[i] ~ dcat(p[i, 1:J])
+    
+    for (j in 1:J){
+      log(q[i,j]) <-  b[1,j] + 
+        b[2,j] * left[i] + 
+        b[3,j] * ahead[i] + 
+        b[4,j] * scoring_pos[i]  + 
+        b[5,j] * outs_when_up[i] + 
+        b[6,j] * previous_des[i] +
+        b[7,j] * pitch_number[i] +
+        b[8,j] * previous_pitch[i]
+      p[i,j] <- q[i,j]/(sum(q[i,1:J]))  ## should be familiar from MLE notes: q is exp(Xb)
+    }   # close J loop
+  }  # close N loop
+  
+  for(k in 1:8){
+    b[k,1] <- 0          ## Constrain to 0 for base comparison
+    for(j in 2:J){
+      b[k,j] ~ dnorm(0, 0.1)
+    }  # close J loop
+  }  # close K loop
+}
+"
+
+
+
+
+```
+
+
+
+
+
+
+
+

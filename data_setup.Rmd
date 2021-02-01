@@ -1,0 +1,72 @@
+---
+title: "Project Proposal"
+author: "Broderick Prows"
+date: "10/28/2020"
+output: pdf_document
+---
+
+
+End Goal of Project: Can we predict Off-Speed Pitches? If yes, is there a succint way (summary statistics) to remember what pitch is most liekly when you are in the box? 
+
+
+Here is an example of the Baseball Savant URL for Padres opening day 2019. This is where we can get pitch velocity and pitch types, as well as high-level results (ball,strike,inplay,outs). This part will take a bit of work to get a viable webscraper to extract the data. 
+```{r}
+opening_day_url <- "https://baseballsavant.mlb.com/gamefeed?game_pk=566275&game_date=2019-3-28&type=pitch_velocity&chart_view=pitch&chart_type=callName&inning=&count=&batter_hand=&pitcher_hand=&filter=&player=home-pitchers_489334&view=Umpire&coloring=Pitch%20Type"
+```
+
+The situational data can be extracted from [RetroSheet Event](https://www.retrosheet.org/eventfile.htm) files. Worst comes to worst we can try to finesse a project out of this data. (predict HR ro something). 
+```{r}
+
+```
+
+We will probably want to pull another file to set up prior distributions for pitch types, or leanr that from the first part of 2019 season. 
+```{r}
+#require(devtools)
+#install_github("BillPetti/baseballr")
+require(baseballr)
+```
+
+Once we can get this data organized, might want to consider storing it in MySQL, depending on how long and robust the process can be.
+
+
+
+N ~ Poisson(mu)
+Y|N ~ Binomial(N, p)
+Y1
+Y2|Y1
+Y3|Y2, Y1
+P(Y1, Y2, …, YN, N)
+P(Y1, Y2, …, YN, N)=P(N)P(Y1|N)P(Y2|Y1, N).....
+
+Mixture of multinomial and poisson, auto-regressive
+
+
+```{r}
+playerid_lookup(last_name = "Scherzer", first_name = "Max")
+```
+
+Lance Lynn another good edge case.
+```{r,message=F}
+pitcher <- 
+  scrape_statcast_savant(
+    start_date = "2015-03-25", 
+    end_date = "2015-10-01", 
+    playerid = 453286,  
+    player_type='pitcher')
+prop.table(table(pitcher$pitch_type))
+```
+
+
+```{r}
+bauer_outage <- 545333
+last_bauer <- scrape_statcast_savant(start_date = "2016-04-24", end_date = "2020-04-24", playerid = bauer_outage, player_type='pitcher')
+```
+
+```{r}
+tail(last_bauer)
+```
+
+```{r}
+hendricks <- scrape_statcast_savant_pitcher(start_date = "2016-04-24", end_date = "2016-05-01",pitcherid = 543294)
+```
+
